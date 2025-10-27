@@ -1,0 +1,6 @@
+[submodule "external/lua"]
+	path = external/lua
+	url = https://github.com/lua/lua.git
+[submodule "external/teal"]
+	path = external/teal
+	url = https://github.com/teal-language/teal.git

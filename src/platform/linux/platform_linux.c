@@ -1,11 +1,16 @@
-#include "platform/platform.h"
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
-#include <xcb/xcb.h>
 #include <time.h>
+
+#ifdef USE_X11
+#define VK_USE_PLATFORM_XCB_KHR
+#include <xcb/xcb.h>
+#endif
+#include <vulkan/vulkan.h>
+
+#include "platform/platform.h"
 
 /* X11 atoms */
 typedef struct {
@@ -27,6 +32,7 @@ struct Platform {
 };
 
 struct PlatformWindow {
+    Platform* platform;  /* Reference back to platform for surface creation */
     xcb_window_t xcb_window;
     int width;
     int height;
@@ -203,7 +209,7 @@ PlatformError platform_init(Platform** out_platform) {
         return PLATFORM_ERROR_INVALID_ARG;
     }
 
-    Platform* platform = (Platform*)malloc(sizeof(Platform));
+    Platform* platform = (Platform*)calloc(1, sizeof(Platform));
     if (!platform) {
         return PLATFORM_ERROR_OUT_OF_MEMORY;
     }
@@ -247,9 +253,8 @@ PlatformError platform_init(Platform** out_platform) {
         platform->dpi_y = (platform->screen->height_in_pixels * 25.4f) / platform->screen->height_in_millimeters;
     }
 
-    /* Initialize window tracking */
+    /* Initialize window tracking (already zeroed by calloc) */
     platform->window_count = 0;
-    memset(platform->windows, 0, sizeof(platform->windows));
 
     *out_platform = platform;
     return PLATFORM_OK;
@@ -282,11 +287,12 @@ PlatformError platform_create_window(Platform* platform,
         return PLATFORM_ERROR_INVALID_ARG;
     }
 
-    PlatformWindow* window = (PlatformWindow*)malloc(sizeof(PlatformWindow));
+    PlatformWindow* window = (PlatformWindow*)calloc(1, sizeof(PlatformWindow));
     if (!window) {
         return PLATFORM_ERROR_OUT_OF_MEMORY;
     }
 
+    window->platform = platform;
     window->width = config->width;
     window->height = config->height;
     window->visible = false;
@@ -383,7 +389,7 @@ bool platform_poll_event(Platform* platform, Event* out_event) {
     PlatformWindow* window = NULL;
 
     /* Initialize default event */
-    memset(out_event, 0, sizeof(Event));
+    *out_event = (Event){0};
     out_event->type = EVENT_NONE;
     out_event->timestamp = get_current_time();
 
@@ -522,5 +528,97 @@ bool platform_window_close_requested(PlatformWindow* window) {
         return false;
     }
     return window->close_requested;
+}
+
+void platform_get_window_size(PlatformWindow* window, int* width, int* height) {
+    if (!window) {
+        if (width) *width = 0;
+        if (height) *height = 0;
+        return;
+    }
+
+#ifdef USE_X11
+    Platform* platform = window->platform;
+    if (!platform || !platform->xcb_conn) {
+        if (width) *width = window->width;
+        if (height) *height = window->height;
+        return;
+    }
+
+    /* Query current window geometry from X11 */
+    xcb_get_geometry_cookie_t cookie = xcb_get_geometry(platform->xcb_conn, window->xcb_window);
+    xcb_get_geometry_reply_t* reply = xcb_get_geometry_reply(platform->xcb_conn, cookie, NULL);
+    if (reply) {
+        window->width = reply->width;
+        window->height = reply->height;
+        free(reply);
+    }
+#endif
+
+    if (width) *width = window->width;
+    if (height) *height = window->height;
+}
+
+void platform_get_framebuffer_size(PlatformWindow* window, int* width, int* height) {
+    /* On Linux with X11, framebuffer size is the same as window size (no high-DPI scaling) */
+    platform_get_window_size(window, width, height);
+}
+
+/* ============================================================================
+ * Vulkan Support
+ * ============================================================================ */
+
+PlatformError platform_create_vulkan_surface(PlatformWindow* window,
+                                              VkInstance instance,
+                                              VkSurfaceKHR* out_surface) {
+    if (!window || !instance || !out_surface) {
+        return PLATFORM_ERROR_INVALID_ARG;
+    }
+
+#ifdef USE_X11
+    if (!window->platform || !window->platform->xcb_conn || !window->platform->screen) {
+        return PLATFORM_ERROR_VULKAN;
+    }
+
+    /* Create XCB surface for Vulkan rendering */
+    VkXcbSurfaceCreateInfoKHR surface_info = {
+        .sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+        .pNext = NULL,
+        .flags = 0,
+        .connection = window->platform->xcb_conn,
+        .window = window->xcb_window,
+    };
+
+    VkResult result = vkCreateXcbSurfaceKHR(instance, &surface_info, NULL, out_surface);
+    if (result != VK_SUCCESS) {
+        return PLATFORM_ERROR_VULKAN;
+    }
+
+    return PLATFORM_OK;
+#else
+    /* Wayland support not yet implemented */
+    return PLATFORM_ERROR_VULKAN;
+#endif
+}
+
+PlatformError platform_get_required_vulkan_extensions(const char** out_extensions,
+                                                       uint32_t* out_count) {
+    if (!out_extensions || !out_count) {
+        return PLATFORM_ERROR_INVALID_ARG;
+    }
+
+    static const char* extensions[] = {
+        VK_KHR_SURFACE_EXTENSION_NAME,
+#ifdef USE_X11
+        VK_KHR_XCB_SURFACE_EXTENSION_NAME,
+#endif
+#ifdef USE_WAYLAND
+        VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
+#endif
+    };
+
+    *out_extensions = (const char*)extensions;
+    *out_count = sizeof(extensions) / sizeof(extensions[0]);
+    return PLATFORM_OK;
 }
 

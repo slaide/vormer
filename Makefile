@@ -26,7 +26,7 @@ ifeq ($(UNAME),Linux)
         LIBS += -lwayland-client
     else
         CFLAGS += -DUSE_X11
-        LIBS += -lxcb
+        LIBS += -lxcb -lX11
     endif
 endif
 
@@ -37,7 +37,7 @@ ifeq ($(UNAME),Darwin)
     LIBS += -L/usr/local/lib -lMoltenVK
 endif
 
-SRC_DIRS = src src/core src/graphics src/parsers src/math src/scene src/scripting
+SRC_DIRS = src src/core src/graphics src/parsers src/math src/scene src/scripting src/platform
 
 C_SRCS = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
 C_OBJS = $(patsubst %.c,$(BUILD_SUBDIR)/%.o,$(C_SRCS))

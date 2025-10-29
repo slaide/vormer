@@ -1,0 +1,31 @@
+CompileFlags:
+  CompilationDatabase: .
+  Add:
+    - "-std=gnu2x"
+    - "-Isrc"
+    - "-Iinclude"
+    - "-Iexternal/lua"
+
+Diagnostics:
+  ClangTidy:
+    Add:
+      - modernize-*
+      - performance-*
+      - bugprone-*
+      - clang-analyzer-*
+    Remove:
+      - readability-magic-numbers
+      - modernize-use-trailing-return-type
+  UnusedIncludes: Strict
+  Includes:
+    IgnoreHeader:
+      - "^<.*\\.hpp$"
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
+
+Index:
+  StandardLibrary: true
+  Background: Build

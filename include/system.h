@@ -95,11 +95,14 @@ struct System{
 
             int num_open_windows;
             struct XcbWindow**windows;
+
+            bool useXinput2;
         }xcb;
     };
 };
 struct SystemCreateInfo{
-    int _ignored;
+    // enable extended input events
+    bool xcb_enableXinput2;
 };
 void System_create(struct SystemCreateInfo*create_info,struct System*system);
 void System_destroy(struct System*system);
@@ -113,6 +116,7 @@ struct Window{
         int id;
         // WM_DELETE_WINDOW atom, which is sent when the window is closed via the X (close) button
         unsigned close_msg_data;
+        int xi_opcode;
 
         int height,width;
     }*xcb;

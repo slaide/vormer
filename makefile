@@ -1,6 +1,6 @@
 CC ?= gcc
 CFLAGS = -std=gnu23 -Wall -Werror -Wpedantic -Wextra -Iinclude
-LFLAGS = -lxcb
+LFLAGS = -lxcb -lxcb-xinput
 
 OBJECTS = main.o system.o
 

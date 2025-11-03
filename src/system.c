@@ -2,7 +2,7 @@
 #include <stdlib.h>
 
 #include <xcb/xcb.h>
-#include <xcb/xproto.h>
+#include <xcb/xinput.h>
 
 #include <util.h>
 #include <system.h>
@@ -22,12 +22,13 @@ void System_create(struct SystemCreateInfo*create_info,struct System*system){
     xcb_connection_t*con=xcb_connect(nullptr,nullptr);
     CHECK(con!=nullptr,"failed to xcb connect");
 
-    printf("established connection\n");
-
     *system=(struct System){
         .interface=SYSTEM_INTERFACE_XCB,
         .xcb={
             .con=con,
+            .num_open_windows=0,
+            .windows=nullptr,
+            .useXinput2=create_info->xcb_enableXinput2,
         },
     };
 }
@@ -59,6 +60,14 @@ static inline enum BUTTON xcbButton_to_vormerButton(int xcb_button){
         default:
             return BUTTON_UNKNOWN;
     }
+}
+static inline float fp1616_to_float(xcb_input_fp1616_t fp1616){
+    float maj=(float)(fp1616>>16);
+    float min=(float)(fp1616&0xFFFF)/(float)(0xFFFF);
+    return maj+min;
+}
+static inline double fp3232_to_float(xcb_input_fp3232_t fp3232){
+    return fp3232.integral + (fp3232.frac / (double)(1ULL << 32));
 }
 void System_pollEvent(struct System*system,struct Event*event){
     *event=(struct Event){};
@@ -233,8 +242,10 @@ void System_pollEvent(struct System*system,struct Event*event){
             {
                 xcb_client_message_event_t*xevent=(xcb_client_message_event_t*)xcb_event;
 
-                if(system->xcb.num_open_windows==0)
+                if(system->xcb.num_open_windows==0){
+                    event->kind=EVENT_KIND_IGNORED;
                     break;
+                }
 
                 auto window=system->xcb.windows[0];
 
@@ -246,8 +257,82 @@ void System_pollEvent(struct System*system,struct Event*event){
             }
             break;
 
+        case XCB_GE_GENERIC:
+            {
+                printf("got better input event\n");
+
+                if(system->xcb.num_open_windows==0){
+                    event->kind=EVENT_KIND_IGNORED;
+                    break;
+                }
+
+                auto window=system->xcb.windows[0];
+
+                auto xevent=(struct xcb_ge_generic_event_t*)xcb_event;
+                if(xevent->extension!=window->xi_opcode){
+                    event->kind=EVENT_KIND_IGNORED;
+                    break;
+                }
+
+                // https://xcb.freedesktop.org/manual/xinput_8h_source.html
+                switch(xevent->event_type){
+                    case XCB_INPUT_MOTION:
+                        {
+                            auto xi_event=(xcb_input_motion_event_t*)xevent;
+
+                            // Get valuator mask and values (using button_press accessors since motion is a typedef)
+                            uint32_t *valuator_mask = xcb_input_button_press_valuator_mask(xi_event);
+                            xcb_input_fp3232_t *axisvalues = xcb_input_button_press_axisvalues(xi_event);
+                            
+                            // Track which valuators are present
+                            int value_index = 0;
+                            for (int i = 0; i < xi_event->valuators_len * 32; i++) {
+                                // Check if this valuator is set in the mask
+                                if (valuator_mask[i / 32] & (1 << (i % 32))) {
+                                    double value = fp3232_to_float(axisvalues[value_index]);
+                                    
+                                    // Valuator 2 is typically vertical scroll
+                                    // Valuator 3 is typically horizontal scroll
+                                    if (i == 2) {
+                                        printf("Vertical scroll value: %f\n", value);
+                                    } else if (i == 3) {
+                                        printf("Horizontal scroll value: %f\n", value);
+                                    }
+                                    
+                                    value_index++;
+                                }
+                            }
+
+                            float event_x=fp1616_to_float(xi_event->event_x);
+                            float event_y=fp1616_to_float(xi_event->event_y);
+
+                            *event=(struct Event){
+                                .kind=EVENT_KIND_POINTER_MOVE,
+                                .pointer_move={
+                                    .x=event_x/(float)window->width,
+                                    .y=(float)(window->height-event_y)/(float)window->height,
+                                },
+                            };
+                        }
+                        break;
+                    case XCB_INPUT_SCROLL_TYPE_VERTICAL:
+                    case XCB_INPUT_SCROLL_TYPE_HORIZONTAL:
+                        {
+                            //auto xi_event=(xcb_input_scroll_type_t*)xevent;
+
+                            //printf("%d\n",xi_event);
+                        }
+                        break;
+                    default:
+                        printf("unhandled xi2 event %d\n", xevent->event_type);
+                        event->kind=EVENT_KIND_IGNORED;
+                        break;
+                }
+            }   
+            break;
+
         default:
-            printf("event %d\n", event_type);
+            printf("unhandled xcb event %d\n", event_type);
             // more invalid than ignored, but kinda comes out to the same result.
             // (we know there is something, but don't actually care what it is)
             event->kind=EVENT_KIND_IGNORED;
@@ -305,6 +390,39 @@ void Window_create(
                 value_mask,
                 value_list
             );
+
+            uint8_t xi_opcode={};
+
+            if(info->system->xcb.useXinput2){
+                // register xinput2 event handling
+                xcb_query_extension_cookie_t xi_cookie=xcb_query_extension(con, strlen("XInputExtension"), "XInputExtension");
+                xcb_query_extension_reply_t *xi_reply = xcb_query_extension_reply(
+                    con,
+                    xi_cookie,
+                    NULL
+                );
+                xi_opcode = xi_reply->major_opcode;
+                free(xi_reply);
+
+                // register _which_ xinput2 events we want to handle
+                struct {
+                    xcb_input_event_mask_t head;
+                    uint32_t mask;
+                } mask;
+
+                mask.head.deviceid = XCB_INPUT_DEVICE_ALL_MASTER;
+                mask.head.mask_len = 1;
+                mask.mask =
+                    XCB_INPUT_XI_EVENT_MASK_MOTION
+                    | XCB_INPUT_XI_EVENT_MASK_BUTTON_PRESS
+                    | XCB_INPUT_XI_EVENT_MASK_BUTTON_RELEASE
+                    | XCB_INPUT_XI_EVENT_MASK_FOCUS_IN
+                    | XCB_INPUT_XI_EVENT_MASK_FOCUS_OUT
+                    | XCB_INPUT_XI_EVENT_MASK_BUTTON_PRESS
+                    | XCB_INPUT_XI_EVENT_MASK_BUTTON_RELEASE;
+
+                xcb_input_xi_select_events(con, window_id, 1, &mask.head);
+            }
 
             // Set up WM_DELETE_WINDOW for close button detection
             int wm_protocols=xcb_get_atom(con,"WM_PROTOCOLS");
@@ -418,7 +536,10 @@ void Window_create(
             auto xcb_window=(struct XcbWindow*)malloc(sizeof(struct XcbWindow));
             *xcb_window=(struct XcbWindow){
                 .id=window_id,
+
                 .close_msg_data=wm_delete_window,
+                .xi_opcode=xi_opcode,
+
                 .width=info->width,
                 .height=info->height,
             };

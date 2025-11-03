@@ -36,10 +36,223 @@ void System_destroy(struct System*system){
         case SYSTEM_INTERFACE_XCB:
             xcb_disconnect(system->xcb.con);
             xcb_flush(system->xcb.con);
+
+            free(system->xcb.windows);
+
             break;
         default:
             CHECK(false,"unimplemented\n");
     }
+}
+static inline enum BUTTON xcbButton_to_vormerButton(int xcb_button){
+    switch(xcb_button){
+        case XCB_BUTTON_INDEX_1:
+            return BUTTON_LEFT;
+        case XCB_BUTTON_INDEX_2:
+            return BUTTON_MIDDLE;
+        case XCB_BUTTON_INDEX_3:
+            return BUTTON_RIGHT;
+        case XCB_BUTTON_INDEX_4:
+            return BUTTON_4;
+        case XCB_BUTTON_INDEX_5:
+            return BUTTON_5;
+        default:
+            return BUTTON_UNKNOWN;
+    }
+}
+void System_pollEvent(struct System*system,struct Event*event){
+    *event=(struct Event){};
+
+    xcb_flush(system->xcb.con);
+
+    xcb_generic_event_t*xcb_event=xcb_poll_for_event(system->xcb.con);
+    if(!xcb_event)
+        return;
+    
+    uint8_t event_type = xcb_event->response_type & ~0x80;
+    switch(event_type){
+        case XCB_KEY_PRESS:
+            {
+                auto xevent=(xcb_key_press_event_t*)xcb_event;
+                printf("key press %d\n",xevent->detail);
+
+                *event=(struct Event){
+                    .kind=EVENT_KIND_KEY_PRESS,
+                    .key_press={
+                        
+                    },
+                };
+            }
+            break;
+        case XCB_KEY_RELEASE:
+            {
+                auto xevent=(xcb_key_release_event_t*)xcb_event;
+                printf("key release %d\n",xevent->detail);
+
+                *event=(struct Event){
+                    .kind=EVENT_KIND_KEY_RELEASE,
+                    .key_release={
+
+                    },
+                };
+            }
+            break;
+
+        case XCB_BUTTON_PRESS:
+            {
+                auto xevent=(xcb_button_press_event_t*)xcb_event;
+
+                enum BUTTON vormer_button=xcbButton_to_vormerButton(xevent->detail);
+
+                *event=(struct Event){
+                    .kind=EVENT_KIND_BUTTON_PRESS,
+                    .button_press={
+                        .button=vormer_button,
+                    },
+                };
+            }
+            break;
+        case XCB_BUTTON_RELEASE:
+            {
+                auto xevent=(xcb_button_release_event_t*)xcb_event;
+
+                enum BUTTON vormer_button=xcbButton_to_vormerButton(xevent->detail);
+
+                *event=(struct Event){
+                    .kind=EVENT_KIND_BUTTON_RELEASE,
+                    .button_release={
+                        .button=vormer_button,
+                    },
+                };
+            }
+            break;
+
+        case XCB_MOTION_NOTIFY:
+            {
+                auto xevent=(xcb_motion_notify_event_t*)xcb_event;
+
+                if(system->xcb.num_open_windows==0){
+                    event->kind=EVENT_KIND_IGNORED;
+                    break;
+                }
+
+                auto window=system->xcb.windows[0];
+
+                *event=(struct Event){
+                    .kind=EVENT_KIND_POINTER_MOVE,
+                    .pointer_move={
+                        .x=(float)xevent->event_x/(float)window->width,
+                        .y=(float)(window->height-xevent->event_y)/(float)window->height,
+                    },
+                };
+            }
+            break;
+
+        case XCB_ENTER_NOTIFY:
+            {
+                printf("cursor entered the window\n");
+            }
+            break;
+        case XCB_LEAVE_NOTIFY:
+            {
+                printf("cursor left the window\n");
+            }
+            break;
+
+        case XCB_FOCUS_IN:
+            {
+                *event=(struct Event){
+                    .kind=EVENT_KIND_FOCUS_GAINED,
+                };
+            }
+            break;
+        case XCB_FOCUS_OUT:
+            {
+                *event=(struct Event){
+                    .kind=EVENT_KIND_FOCUS_LOST,
+                };
+            }
+            break;
+
+            printf("got known event\n");
+            break;
+    
+        case XCB_CONFIGURE_NOTIFY:
+            {
+                auto xevent=(xcb_configure_notify_event_t*)xcb_event;
+                // window might have been resized, moved.. or maybe something else.
+                // we only care about resize though
+                if(system->xcb.num_open_windows==0){
+                    event->kind=EVENT_KIND_IGNORED;
+                    printf("ignoring configure (1)\n");
+                    break;
+                }
+
+                auto window=system->xcb.windows[0];
+
+                int
+                    oldsize[2]={
+                        [0]=window->width,
+                        [1]=window->height
+                    },
+                    newsize[2]={
+                        [0]=xevent->width,
+                        [1]=xevent->height
+                    };
+
+                if(window->height==xevent->height && window->width==xevent->width){
+                    event->kind=EVENT_KIND_IGNORED;
+                    printf("ignoring configure (2)\n");
+                    break;
+                }
+
+                *event=(struct Event){
+                    .kind=EVENT_KIND_WINDOW_RESIZED,
+                    .window_resize={
+                        .old_width=oldsize[0],
+                        .old_height=oldsize[1],
+                        .new_width=newsize[0],
+                        .new_height=newsize[1],
+                    }
+                };
+            }
+            break;
+
+        case XCB_EXPOSE:
+        case XCB_KEYMAP_NOTIFY:
+        case XCB_REPARENT_NOTIFY:
+        case XCB_MAP_NOTIFY:
+        case XCB_PROPERTY_NOTIFY:
+        case XCB_COLORMAP_NOTIFY:
+        case XCB_VISIBILITY_NOTIFY:
+            // ignored
+            event->kind=EVENT_KIND_IGNORED;
+            break;
+
+        case XCB_CLIENT_MESSAGE:
+            {
+                xcb_client_message_event_t*xevent=(xcb_client_message_event_t*)xcb_event;
+
+                if(system->xcb.num_open_windows==0)
+                    break;
+
+                auto window=system->xcb.windows[0];
+
+                if(xevent->format==32 && xevent->data.data32[0]==window->close_msg_data){
+                    *event=(struct Event){
+                        .kind=EVENT_KIND_WINDOW_CLOSED,
+                    };
+                }
+            }
+            break;
+
+        default:
+            printf("event %d\n", event_type);
+            // more invalid than ignored, but kinda comes out to the same result.
+            // (we know there is something, but don't actually care what it is)
+            event->kind=EVENT_KIND_IGNORED;
+    }
+    free(xcb_event);
 }
 
 void Window_create(
@@ -202,16 +415,24 @@ void Window_create(
             xcb_map_window(con, window_id);
             xcb_flush(con);
 
-            *window=(struct Window){
-                .system=info->system,
-
+            auto xcb_window=(struct XcbWindow*)malloc(sizeof(struct XcbWindow));
+            *xcb_window=(struct XcbWindow){
+                .id=window_id,
+                .close_msg_data=wm_delete_window,
                 .width=info->width,
                 .height=info->height,
+            };
 
-                .xcb={
-                    .id=window_id,
-                    .close_msg_data=wm_delete_window,
-                },
+            info->system->xcb.num_open_windows++;
+            info->system->xcb.windows=realloc(
+                info->system->xcb.windows,
+                info->system->xcb.num_open_windows*sizeof(struct XcbWindow)
+            );
+            info->system->xcb.windows[info->system->xcb.num_open_windows-1]=xcb_window;
+
+            *window=(struct Window){
+                .system=info->system,
+                .xcb=xcb_window,
             };
         }
             break;
@@ -225,9 +446,21 @@ void Window_destroy(
 ){
     switch(window->system->interface){
         case SYSTEM_INTERFACE_XCB:
-            xcb_destroy_window(window->system->xcb.con,window->xcb.id);
+            xcb_destroy_window(window->system->xcb.con,window->xcb->id);
+            free(window->system->xcb.windows[0]);
+
+            if(window->system->xcb.num_open_windows==1){
+                // nothing to do. we dont need to free the memory.
+            }else{
+                // TODO
+            }
+
+            window->system->xcb.num_open_windows--;
+
             xcb_flush(window->system->xcb.con);
+
             break;
+
         default:CHECK(false,"unimplemented");
     }
 }

@@ -26,107 +26,73 @@ int main(int argc,char**argv){
 
     int running = 1;
     while(running){
-        xcb_flush(system.xcb.con);
-
-        xcb_generic_event_t*xcb_event;
-        while((xcb_event=xcb_poll_for_event(system.xcb.con))){
-            uint8_t event_type = xcb_event->response_type & ~0x80;
-            switch(event_type){
-                case XCB_KEY_PRESS:
+        struct Event event;
+        while((System_pollEvent(&system,&event),event.kind!=EVENT_KIND_NONE)){
+            switch(event.kind){
+                case EVENT_KIND_KEY_PRESS:
                     {
-                        xcb_key_press_event_t*event=(xcb_key_press_event_t*)xcb_event;
-                        printf("key press %d\n",event->detail);
+                        printf("key press %d\n",event.key_press.key);
                     }
                     break;
-                case XCB_KEY_RELEASE:
+                case EVENT_KIND_KEY_RELEASE:
                     {
-                        xcb_key_release_event_t*event=(xcb_key_release_event_t*)xcb_event;
-                        printf("key release %d\n",event->detail);
+                        printf("key release %d\n",event.key_release.key);
                     }
                     break;
 
-                case XCB_BUTTON_PRESS:
+                case EVENT_KIND_BUTTON_PRESS:
                     {
-                        xcb_button_press_event_t*event=(xcb_button_press_event_t*)xcb_event;
-                        printf("button press %d\n",event->detail);
+                        printf("button press %d\n",event.button_press.button);
                     }
                     break;
-                case XCB_BUTTON_RELEASE:
+                case EVENT_KIND_BUTTON_RELEASE:
                     {
-                        xcb_button_release_event_t*event=(xcb_button_release_event_t*)xcb_event;
-                        printf("button release %d\n",event->detail);
-                    }
-                    break;
-
-                case XCB_MOTION_NOTIFY:
-                    {
-                        auto event=(xcb_motion_notify_event_t*)xcb_event;
-                        printf("motion at x %d y %d\n",event->event_x,event->event_y);
+                        printf("button release %d\n",event.button_release.button);
                     }
                     break;
 
-                case XCB_ENTER_NOTIFY:
+                case EVENT_KIND_POINTER_MOVE:
                     {
-                        printf("cursor entered the window\n");
-                    }
-                    break;
-                case XCB_LEAVE_NOTIFY:
-                    {
-                        printf("cursor left the window\n");
+                        printf("pointer moved to %f x %f y\n",event.pointer_move.x,event.pointer_move.y);
                     }
                     break;
 
-                case XCB_FOCUS_IN:
+                case EVENT_KIND_FOCUS_GAINED:
                     {
                         printf("window gained focus\n");
                     }
                     break;
-                case XCB_FOCUS_OUT:
+                case EVENT_KIND_FOCUS_LOST:
                     {
                         printf("window lost focus\n");
                     }
                     break;
-
-                    printf("got known event\n");
-                    break;
             
-                case XCB_CONFIGURE_NOTIFY:
+                case EVENT_KIND_WINDOW_RESIZED:
                     {
-                        auto event=(xcb_configure_notify_event_t*)xcb_event;
-                        // window might have been resized, moved.. or maybe something else.
-                        // we only care about resize though
-                        if(window.height!=event->height || window.width!=event->width){
-                            printf("window resized to %dx%d\n",event->width,event->height);
-                            window.height=event->height;
-                            window.width=event->width;
-                        }
+                        printf(
+                            "window got resized from %dx%d to %dx%d\n",
+                            event.window_resize.old_width,
+                            event.window_resize.old_height,
+                            event.window_resize.new_width,
+                            event.window_resize.new_height
+                        );
                     }
                     break;
 
-                case XCB_EXPOSE:
-                case XCB_KEYMAP_NOTIFY:
-                case XCB_REPARENT_NOTIFY:
-                case XCB_MAP_NOTIFY:
-                case XCB_PROPERTY_NOTIFY:
-                case XCB_COLORMAP_NOTIFY:
-                case XCB_VISIBILITY_NOTIFY:
-                    // ignored
+                case EVENT_KIND_WINDOW_CLOSED:
+                    {
+                        printf("window closed\n");
+                        running = 0;
+                    }
                     break;
 
-                case XCB_CLIENT_MESSAGE:
-                    {
-                        xcb_client_message_event_t*event=(xcb_client_message_event_t*)xcb_event;
-                        if(event->format==32 && event->data.data32[0]==window.xcb.close_msg_data){
-                            printf("window close requested\n");
-                            running = 0;
-                        }
-                    }
+                case EVENT_KIND_IGNORED:
                     break;
 
                 default:
-                    printf("event %d\n", event_type);
+                    printf("event %d\n", event.kind);
             }
-            free(xcb_event);
         }
     }
 

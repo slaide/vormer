@@ -1,6 +1,6 @@
 CC ?= gcc
-CFLAGS = -std=gnu23 -Wall -Werror -Wpedantic -Wextra -Iinclude
-LFLAGS = -lxcb -lxcb-xinput
+CFLAGS = -std=gnu23 -Wall -Werror -Wpedantic -Wextra -Iinclude -g
+LFLAGS = -lxcb -lxcb-xinput -lvulkan
 
 OBJECTS = main.o system.o
 

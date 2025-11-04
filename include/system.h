@@ -1,6 +1,12 @@
 #pragma once
 
+#include <vulkan/vulkan_core.h>
 #include <xcb/xcb.h>
+
+// https://docs.vulkan.org/spec/latest/appendices/boilerplate.html
+#define VK_USE_PLATFORM_WAYLAND_KHR
+#define VK_USE_PLATFORM_XCB_KHR
+#include <vulkan/vulkan.h>
 
 enum SYSTEM_INTERFACE{
     SYSTEM_INTERFACE_XCB,
@@ -17,7 +23,24 @@ enum BUTTON{
     BUTTON_5,
 };
 enum KEY{
+    KEY_UNKNOWN=0,
+
     KEY_ESCAPE,
+    KEY_BACKSPACE,
+    KEY_DELETE,
+    KEY_ENTER,
+    KEY_RSHIFT,
+    KEY_LSHIFT,
+    KEY_LCTRL,
+    KEY_LOPT,
+    KEY_ROPT,
+    KEY_LSUPER,
+    KEY_RSUPER,
+    KEY_TAB,
+
+    KEY_CAPSLOCK,
+
+    KEY_SPACE,
 };
 
 enum EVENT_KIND{
@@ -87,27 +110,6 @@ struct Event{
     };
 };
 
-struct System{
-    enum SYSTEM_INTERFACE interface;
-    union{
-        struct XcbSystem{
-            xcb_connection_t*con;
-
-            int num_open_windows;
-            struct XcbWindow**windows;
-
-            bool useXinput2;
-        }xcb;
-    };
-};
-struct SystemCreateInfo{
-    // enable extended input events
-    bool xcb_enableXinput2;
-};
-void System_create(struct SystemCreateInfo*create_info,struct System*system);
-void System_destroy(struct System*system);
-void System_pollEvent(struct System*system,struct Event*event);
-
 struct Window{
     struct System*system;
 
@@ -127,6 +129,8 @@ struct WindowCreateInfo{
     int width,height;
 
     const char*title;
+
+    bool decoration;
 };
 void Window_create(
     struct WindowCreateInfo*info,
@@ -135,3 +139,39 @@ void Window_create(
 void Window_destroy(
     struct Window*window
 );
+
+struct System{
+    enum SYSTEM_INTERFACE interface;
+
+    union{
+        struct XcbSystem{
+            xcb_connection_t*con;
+
+            int num_open_windows;
+            struct XcbWindow**windows;
+
+            bool useXinput2;
+        }xcb;
+    };
+
+    struct Window window;
+
+    VkInstance instance;
+    VkPhysicalDevice physical_device;
+    VkSurfaceKHR surface;
+    VkDevice device;
+    VkQueue queue;
+    VkSwapchainKHR swapchain;
+    VkImage *swapchain_images;
+};
+struct SystemCreateInfo{
+    // enable extended input events
+    bool xcb_enableXinput2;
+
+    struct WindowCreateInfo *initial_window_info;
+};
+void System_create(struct SystemCreateInfo*create_info,struct System*system);
+void System_destroy(struct System*system);
+void System_pollEvent(struct System*system,struct Event*event);
+void System_beginFrame(struct System*system);
+void System_endFrame(struct System*system);

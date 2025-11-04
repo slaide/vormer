@@ -1,11 +1,14 @@
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
-#include <xcb/xcb.h>
-#include <xcb/xinput.h>
-
 #include <util.h>
 #include <system.h>
+
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
+#include <xcb/xcb.h>
+#include <xcb/xinput.h>
 
 static xcb_atom_t xcb_get_atom(xcb_connection_t*con,const char*atom_name){
     xcb_intern_atom_cookie_t cookie = xcb_intern_atom(con, 0, strlen(atom_name), atom_name);
@@ -16,11 +19,134 @@ static xcb_atom_t xcb_get_atom(xcb_connection_t*con,const char*atom_name){
     return atom;
 }
 
-void System_create(struct SystemCreateInfo*create_info,struct System*system){
-    discard create_info;
+// https://docs.vulkan.org/refpages/latest/refpages/source/VkResult.html
+static inline const char*string_from_VkResult(VkResult vkres){
+    switch(vkres){
+        case VK_SUCCESS:return "VK_SUCCESS";
+        case VK_ERROR_COMPRESSION_EXHAUSTED_EXT:return "VK_ERROR_COMPRESSION_EXHAUSTED_EXT";
+        case VK_ERROR_DEVICE_LOST:return "VK_ERROR_DEVICE_LOST";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY:return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_MEMORY_MAP_FAILED:return "VK_ERROR_MEMORY_MAP_FAILED";
+        case VK_ERROR_INITIALIZATION_FAILED:return "VK_ERROR_INITIALIZATION_FAILED";
+        case VK_ERROR_OUT_OF_HOST_MEMORY:return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_POOL_MEMORY:return "VK_ERROR_OUT_OF_POOL_MEMORY";
+        case VK_ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR:return "VK_ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR";
+        case VK_ERROR_EXTENSION_NOT_PRESENT:return "VK_ERROR_EXTENSION_NOT_PRESENT";
+        case VK_ERROR_FEATURE_NOT_PRESENT:return "VK_ERROR_FEATURE_NOT_PRESENT";
+        case VK_ERROR_FORMAT_NOT_SUPPORTED:return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+        default:return "unknown";
+    }
+}
+// https://docs.vulkan.org/refpages/latest/refpages/source/VkPresentModeKHR.html
+static inline const char*string_from_VkPresentModeKHR(VkPresentModeKHR present_mode){
+    switch(present_mode){
+        case VK_PRESENT_MODE_IMMEDIATE_KHR:return "VK_PRESENT_MODE_IMMEDIATE_KHR";
+        case VK_PRESENT_MODE_MAILBOX_KHR:return "VK_PRESENT_MODE_MAILBOX_KHR";
+        case VK_PRESENT_MODE_FIFO_KHR:return "VK_PRESENT_MODE_FIFO_KHR";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "VK_PRESENT_MODE_FIFO_RELAXED_KHR";
 
-    xcb_connection_t*con=xcb_connect(nullptr,nullptr);
-    CHECK(con!=nullptr,"failed to xcb connect");
+        default:return "unknown";
+    }
+}
+// https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html
+static inline const char*string_from_VkFormat(VkFormat format){
+    switch(format){
+        case VK_FORMAT_UNDEFINED:return "VK_FORMAT_UNDEFINED";
+        case VK_FORMAT_R4G4_UNORM_PACK8:return "VK_FORMAT_R4G4_UNORM_PACK8";
+
+        case VK_FORMAT_R8G8B8A8_UNORM:return "VK_FORMAT_R8G8B8A8_UNORM";
+
+        case VK_FORMAT_B8G8R8A8_UNORM:return "VK_FORMAT_B8G8R8A8_UNORM";
+
+        case VK_FORMAT_B8G8R8A8_SRGB:return "VK_FORMAT_B8G8R8A8_SRGB";
+
+        case VK_FORMAT_A4B4G4R4_UNORM_PACK16:return "VK_FORMAT_A4B4G4R4_UNORM_PACK16";
+        case VK_FORMAT_A1B5G5R5_UNORM_PACK16:return "VK_FORMAT_A1B5G5R5_UNORM_PACK16";
+
+        default:printf("unknown vkformat %d\n",format);return "unknown";
+    }
+}
+static inline const char*string_from_VkColorSpaceKHR(VkColorSpaceKHR colorspace){
+    switch(colorspace){
+        case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:return "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR";
+        case VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT:return "VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT:return "VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT:return "VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_BT709_NONLINEAR_EXT:return "VK_COLOR_SPACE_BT709_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT:return "VK_COLOR_SPACE_DCI_P3_NONLINEAR_EXT";
+        case VK_COLOR_SPACE_DISPLAY_NATIVE_AMD:return "VK_COLOR_SPACE_DISPLAY_NATIVE_AMD";
+        default:return "unknown";
+    }
+}
+
+VkSemaphore acquireImageSemaphore=VK_NULL_HANDLE;
+VkFence acquireImageFence=VK_NULL_HANDLE;
+unsigned imageIndex;
+VkCommandPool command_pool;
+VkCommandBuffer command_buffer;
+unsigned queueFamily=-1;
+void System_create(struct SystemCreateInfo*create_info,struct System*system){
+    CHECK(create_info->initial_window_info!=nullptr,"no intial window create info supplied");
+
+    // create system platform
+    xcb_connection_t*con;
+    if(1){
+        con=xcb_connect(nullptr,nullptr);
+        CHECK(con!=nullptr,"failed to xcb connect");
+    }
+
+    // create instance
+    VkInstance instance;
+    if(1){
+        VkResult vkres;
+
+        printf("---- instance begin ----\n");
+
+        unsigned numInstaceLayers={};
+        vkEnumerateInstanceLayerProperties(&numInstaceLayers,nullptr);
+        VkLayerProperties *layerProperties=calloc(numInstaceLayers,sizeof(VkLayerProperties));
+        vkEnumerateInstanceLayerProperties(&numInstaceLayers,layerProperties);
+        for(int i=-1;i<(int)numInstaceLayers;i++){
+            const char*layername=nullptr;
+            if(i>=0){
+                layername=layerProperties[i].layerName;
+
+                printf("layer %d: %s\n",i,layername);
+            }
+
+            unsigned numInstanceExtensions={};
+            vkEnumerateInstanceExtensionProperties(layername,&numInstanceExtensions,nullptr);
+            VkExtensionProperties*extensionProperties=calloc(numInstanceExtensions,sizeof(VkExtensionProperties));
+            vkEnumerateInstanceExtensionProperties(layername,&numInstanceExtensions,extensionProperties);
+            for(unsigned j=0;j<numInstanceExtensions;j++){
+                if(layername)printf("    ");
+                printf("extension %d %s\n",j,extensionProperties[j].extensionName);
+            }
+        }
+
+        const char*instance_layers[]={
+            "VK_LAYER_KHRONOS_validation"
+        };
+        const char*instance_extensions[]={
+            "VK_KHR_surface",
+            "VK_KHR_xcb_surface"
+        };
+        VkInstanceCreateInfo instance_create_info={
+            .sType=VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pNext=nullptr,
+            .flags=0,
+            .pApplicationInfo=nullptr,
+            .enabledLayerCount=1,
+            .ppEnabledLayerNames=instance_layers,
+            .enabledExtensionCount=2,
+            .ppEnabledExtensionNames=instance_extensions,
+        };
+        vkres=vkCreateInstance(&instance_create_info, nullptr, &instance);
+        CHECK(vkres==VK_SUCCESS,"create instance failed\n");
+
+        printf("---- instance end ----\n");
+    }
+    system->instance=instance;
 
     *system=(struct System){
         .interface=SYSTEM_INTERFACE_XCB,
@@ -31,8 +157,224 @@ void System_create(struct SystemCreateInfo*create_info,struct System*system){
             .useXinput2=create_info->xcb_enableXinput2,
         },
     };
+
+    struct Window window;
+    Window_create(create_info->initial_window_info,&window);
+    system->window=window;
+
+    // create device
+    VkDevice device;
+    VkPhysicalDevice physical_device=VK_NULL_HANDLE;
+    VkSurfaceKHR surface;
+    VkQueue queue;
+    if(1){
+        VkResult vkres;
+
+        unsigned numPhysicalDevices;
+        vkEnumeratePhysicalDevices(instance,&numPhysicalDevices,nullptr);
+        VkPhysicalDevice*physical_devices=calloc(numPhysicalDevices,sizeof(VkPhysicalDevice));
+        vkEnumeratePhysicalDevices(instance,&numPhysicalDevices,physical_devices);
+        for(int i=0;i<(int)numPhysicalDevices;i++){
+            VkPhysicalDeviceProperties deviceProperties;
+            vkGetPhysicalDeviceProperties(physical_devices[i],&deviceProperties);
+            printf("physical device %d %s\n",i,deviceProperties.deviceName);
+            switch(deviceProperties.deviceType){
+                case VK_PHYSICAL_DEVICE_TYPE_CPU:
+                    printf("    VK_PHYSICAL_DEVICE_TYPE_CPU\n");
+                    break;
+                case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+                    physical_device=physical_devices[i];
+                    printf("    VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU\n");
+                    break;
+                case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+                    physical_device=physical_devices[i];
+                    printf("    VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU\n");
+                    break;
+                case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+                    physical_device=physical_devices[i];
+                    printf("    VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU\n");
+                    break;
+                case VK_PHYSICAL_DEVICE_TYPE_OTHER:
+                    printf("    VK_PHYSICAL_DEVICE_TYPE_OTHER\n");
+                    break;
+                default:
+            }
+        }
+
+        CHECK(physical_device!=VK_NULL_HANDLE,"vulkan found no gpu\n");
+
+        VkXcbSurfaceCreateInfoKHR surfaceCreateInfo={
+            .sType=VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+            .pNext=nullptr,
+            .flags=0,
+            .connection=system->xcb.con,
+            .window=system->xcb.windows[0]->id,
+        };
+        vkres=vkCreateXcbSurfaceKHR(instance, &surfaceCreateInfo, nullptr, &surface);
+        CHECK(vkres==VK_SUCCESS,"failed to create surface\n");
+
+        unsigned numFamilies={};
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device,&numFamilies,nullptr);
+        VkQueueFamilyProperties*queueFamilies=calloc(numFamilies,sizeof(VkQueueFamilyProperties));
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device,&numFamilies,queueFamilies);
+        for(unsigned i=0;i<numFamilies;i++){
+            printf("queue %d\n",i);
+            printf("    n %d\n",queueFamilies[i].queueCount);
+            bool
+                supportsCompute=(queueFamilies[i].queueFlags&VK_QUEUE_COMPUTE_BIT)>0,
+                supportsGraphics=(queueFamilies[i].queueFlags&VK_QUEUE_GRAPHICS_BIT)>0,
+                supportsTransfer=(queueFamilies[i].queueFlags&VK_QUEUE_TRANSFER_BIT)>0,
+                supportsSparseBinding=(queueFamilies[i].queueFlags&VK_QUEUE_SPARSE_BINDING_BIT)>0;
+            VkBool32
+                supportsSurfacePresentation=false;
+            
+            vkGetPhysicalDeviceSurfaceSupportKHR(physical_device,i,surface,&supportsSurfacePresentation);
+
+            printf("    compute %d\n", supportsCompute);
+            printf("    graphics %d\n",supportsGraphics);
+            printf("    transfer %d\n",supportsTransfer);
+            printf("    sparse %d\n",  supportsSparseBinding);
+            printf("    surface %d\n", supportsSurfacePresentation);
+
+            if(supportsCompute && supportsGraphics && supportsTransfer && supportsSurfacePresentation)
+                queueFamily=i;
+        }
+        CHECK(queueFamily!=(unsigned)-1,"failed to find suitable queue family\n");
+
+        unsigned numLayers={};
+        vkEnumerateDeviceLayerProperties(physical_device, &numLayers, nullptr);
+        VkLayerProperties*layerProperties=calloc(numLayers,sizeof(VkLayerProperties));
+        vkEnumerateDeviceLayerProperties(physical_device, &numLayers, layerProperties);
+        for(int i=-1;i<(int)numLayers;i++){
+            const char*layerName=nullptr;
+            if(i>=0){
+                layerName=layerProperties[i].layerName;
+                printf("layer %d %s\n",i,layerName);
+            }
+
+            unsigned numExtensions={};
+            vkEnumerateDeviceExtensionProperties(physical_device, layerName, &numExtensions, nullptr);
+            VkExtensionProperties*extensionProperties=calloc(numExtensions,sizeof(VkExtensionProperties));
+            vkEnumerateDeviceExtensionProperties(physical_device, layerName, &numExtensions, extensionProperties);
+            for(unsigned j=0;j<numExtensions;j++){
+                if(layerName)printf("    ");
+                printf("extension %d %s\n",j,extensionProperties[j].extensionName);
+            }
+        }
+
+        float queuePriorities[4]={1,1,1,1};
+        VkDeviceQueueCreateInfo deviceQueueCreateInfos[1]={
+            (VkDeviceQueueCreateInfo){
+                .sType=VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .pNext=nullptr,
+                .flags=0,
+                .queueFamilyIndex=queueFamily,
+                .queueCount=1,
+                .pQueuePriorities=queuePriorities
+            }
+        };
+        const char*deviceLayers[1]={
+            "VK_LAYER_KHRONOS_validation"
+        };
+        const char*deviceExtensions[1]={
+            "VK_KHR_swapchain"
+        };
+        VkDeviceCreateInfo device_create_info={
+            .sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .pNext=nullptr,
+            .flags=0,
+            .queueCreateInfoCount=1,
+            .pQueueCreateInfos=deviceQueueCreateInfos,
+            .enabledLayerCount=1,
+            .ppEnabledLayerNames=deviceLayers,
+            .enabledExtensionCount=1,
+            .ppEnabledExtensionNames=deviceExtensions,
+        };
+        vkres=vkCreateDevice(physical_device,&device_create_info,nullptr,&device);
+        CHECK(vkres==VK_SUCCESS,"create device failed\n");
+
+        vkGetDeviceQueue(device, queueFamily, 0, &queue);
+    }
+    system->physical_device=physical_device;
+    system->device=device;
+    system->surface=surface;
+    system->queue=queue;
+
+    VkSwapchainKHR swapchain;
+    VkImage *swapchain_images;
+    if(1){
+        VkResult vkres;
+
+        VkSurfaceCapabilitiesKHR surfaceCapabilities;
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device,surface,&surfaceCapabilities);
+        printf("surface caps:\n");
+        printf(
+            "    image count min %d max %d\n",
+            surfaceCapabilities.minImageCount,
+            surfaceCapabilities.maxImageCount
+        );
+
+        unsigned numSurfaceFormat={};
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device,surface,&numSurfaceFormat,nullptr);
+        VkSurfaceFormatKHR *surface_formats=calloc(numSurfaceFormat,sizeof(VkSurfaceFormatKHR));
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device,surface,&numSurfaceFormat,surface_formats);
+        printf("surface formats\n");
+        for(int i=0;i<(int)numSurfaceFormat;i++){
+            printf("    %d format %s colorspace %s\n",i,string_from_VkFormat(surface_formats[i].format),string_from_VkColorSpaceKHR(surface_formats[i].colorSpace));
+        }
+
+        unsigned numPresentModes={};
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device,surface,&numPresentModes,nullptr);
+        VkPresentModeKHR *present_modes=calloc(numPresentModes,sizeof(VkPresentModeKHR));
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device,surface,&numPresentModes,present_modes);
+        printf("present modes\n");
+        for(int i=0;i<(int)numPresentModes;i++){
+            printf("    %d %s\n",i,string_from_VkPresentModeKHR(present_modes[i]));
+        }
+
+        VkFormat format=surface_formats[0].format;
+        VkColorSpaceKHR colorspace=surface_formats[0].colorSpace;
+        VkSwapchainCreateInfoKHR create_swapchain_info={
+            .sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            .pNext=nullptr,
+            .flags=0,
+            .surface=surface,
+            .minImageCount=surfaceCapabilities.minImageCount,
+            .imageFormat=format,
+            .imageColorSpace=colorspace,
+            .imageExtent=surfaceCapabilities.currentExtent,
+            .imageArrayLayers=1,
+            .imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .imageSharingMode=VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount=1,
+            .pQueueFamilyIndices=&queueFamily,
+            .preTransform=surfaceCapabilities.currentTransform,
+            .compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            .presentMode=present_modes[0],
+            .clipped=VK_FALSE,
+            .oldSwapchain=VK_NULL_HANDLE
+        };
+        vkres=vkCreateSwapchainKHR(device, &create_swapchain_info, nullptr, &swapchain);
+        CHECK(vkres==VK_SUCCESS,"creating swapchain failed because %s\n",string_from_VkResult(vkres));
+
+        unsigned num_swapchain_images;
+        vkGetSwapchainImagesKHR(device, swapchain, &num_swapchain_images, nullptr);
+        swapchain_images=calloc(num_swapchain_images,sizeof(VkImage));
+        vkGetSwapchainImagesKHR(device, swapchain, &num_swapchain_images, swapchain_images);
+    }
+    system->swapchain=swapchain;
+    system->swapchain_images=swapchain_images;
 }
 void System_destroy(struct System*system){
+    vkDestroyFence(system->device, acquireImageFence, nullptr);
+
+    vkDestroyCommandPool(system->device, command_pool, nullptr);
+
+    vkDestroySwapchainKHR(system->device, system->swapchain, nullptr);
+
+    vkDestroyDevice(system->device,nullptr);
+    vkDestroyInstance(system->instance, nullptr);
+
     switch(system->interface){
         case SYSTEM_INTERFACE_XCB:
             xcb_disconnect(system->xcb.con);
@@ -45,6 +387,7 @@ void System_destroy(struct System*system){
             CHECK(false,"unimplemented\n");
     }
 }
+
 static inline enum BUTTON xcbButton_to_vormerButton(int xcb_button){
     switch(xcb_button){
         case XCB_BUTTON_INDEX_1:
@@ -61,6 +404,217 @@ static inline enum BUTTON xcbButton_to_vormerButton(int xcb_button){
             return BUTTON_UNKNOWN;
     }
 }
+static inline enum KEY xcbKey_to_vormerKey(int xcb_key){
+    switch(xcb_key){
+        case 9: return KEY_ESCAPE;
+
+        case 22:return KEY_BACKSPACE;
+        case 23:return KEY_TAB;
+
+        case 36:return KEY_ENTER;
+        case 37:return KEY_LCTRL;
+        case 50:return KEY_LSHIFT;
+        case 62:return KEY_RSHIFT;
+        case 64:return KEY_LOPT;
+        case 65:return KEY_SPACE;
+        case 66:return KEY_CAPSLOCK;
+
+        case 108:return KEY_ROPT;
+        case 119:return KEY_DELETE;
+        case 133:return KEY_LSUPER;
+        case 134:return KEY_RSUPER;
+
+        default: printf("unknown key %d\n",xcb_key);return KEY_UNKNOWN;
+    }
+}
+
+static const int acquiredImage_accessMask=VK_ACCESS_NONE;
+static const int acquiredImage_layout=VK_IMAGE_LAYOUT_UNDEFINED;
+static const int clearImage_accessMask=VK_ACCESS_MEMORY_WRITE_BIT;
+static const int clearImage_layout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+static const int drawImage_accessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+static const int drawImage_layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+static const int presentImage_accessMask=VK_ACCESS_MEMORY_READ_BIT;
+static const int presentImage_layout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+static const VkImageSubresourceRange color_subresource_range={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+static VkImageMemoryBarrier
+    image_barrier_acquireToClear={
+        .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext=nullptr,
+        .srcAccessMask=acquiredImage_accessMask,
+        .oldLayout=acquiredImage_layout,
+        .dstAccessMask=clearImage_accessMask,
+        .newLayout=clearImage_layout,
+        .srcQueueFamilyIndex=0,
+        .dstQueueFamilyIndex=0,
+        .image=VK_NULL_HANDLE,// filled in dynamically
+        .subresourceRange=color_subresource_range
+    },
+    image_barrier_clearToDraw={
+        .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext=nullptr,
+        .srcAccessMask=clearImage_accessMask,
+        .dstAccessMask=drawImage_accessMask,
+        .oldLayout=clearImage_layout,
+        .newLayout=drawImage_layout,
+        .srcQueueFamilyIndex=0,
+        .dstQueueFamilyIndex=0,
+        .image=VK_NULL_HANDLE,
+        .subresourceRange=color_subresource_range
+    },
+    image_barrier_drawToPresent={
+        .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext=nullptr,
+        .srcAccessMask=drawImage_accessMask,
+        .dstAccessMask=presentImage_accessMask,
+        .oldLayout=drawImage_layout,
+        .newLayout=presentImage_layout,
+        .srcQueueFamilyIndex=0,
+        .dstQueueFamilyIndex=0,
+        .image=VK_NULL_HANDLE,
+        .subresourceRange=color_subresource_range
+    };
+
+void System_beginFrame(struct System*system){
+    if(acquireImageFence==VK_NULL_HANDLE){
+        VkFenceCreateInfo fence_create_info={
+            .sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .pNext=nullptr,
+            .flags=0
+        };
+        vkCreateFence(system->device, &fence_create_info, nullptr, &acquireImageFence);
+    }
+    if(command_pool==VK_NULL_HANDLE){
+        VkCommandPoolCreateInfo command_pool_create_info={
+            .sType=VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext=nullptr,
+            .flags=0,
+            .queueFamilyIndex=queueFamily
+        };
+        vkCreateCommandPool(system->device, &command_pool_create_info, nullptr, &command_pool);
+    }
+
+    VkCommandBufferAllocateInfo command_buffer_allocate_info={
+        .sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .pNext=nullptr,
+        .commandPool=command_pool,
+        .level=VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount=1
+    };
+    vkAllocateCommandBuffers(system->device, &command_buffer_allocate_info, &command_buffer);
+
+    vkAcquireNextImageKHR(
+        system->device, 
+        system->swapchain, 
+        UINT64_MAX, 
+        acquireImageSemaphore, 
+        acquireImageFence, 
+        &imageIndex
+    );
+    printf("acquired image %d\n",imageIndex);
+
+    vkWaitForFences(system->device, 1, &acquireImageFence, VK_TRUE, UINT64_MAX);
+    vkResetFences(system->device, 1, &acquireImageFence);
+
+    VkCommandBufferBeginInfo command_buffer_begin_info={
+        .sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext=nullptr,
+        .flags=0,
+        .pInheritanceInfo=nullptr
+    };
+    vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
+
+    image_barrier_acquireToClear.image=system->swapchain_images[imageIndex];
+    vkCmdPipelineBarrier(
+        command_buffer, 
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 
+        0, 
+        0, 
+        nullptr, 
+        0, 
+        nullptr, 
+        1, 
+        &image_barrier_acquireToClear
+    );
+
+    VkClearColorValue clear_color={
+        .float32={1,0.3,0,1}
+    };
+    vkCmdClearColorImage(
+        command_buffer, 
+        system->swapchain_images[imageIndex], 
+        image_barrier_acquireToClear.newLayout, 
+        &clear_color, 
+        1, 
+        &color_subresource_range
+    );
+
+    image_barrier_clearToDraw.image=system->swapchain_images[imageIndex];
+    vkCmdPipelineBarrier(
+        command_buffer, 
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 
+        0, 
+        0, 
+        nullptr, 
+        0, 
+        nullptr, 
+        1, 
+        &image_barrier_clearToDraw
+    );
+}
+void System_endFrame(struct System*system){
+    VkResult vkres;
+
+    image_barrier_drawToPresent.image=system->swapchain_images[imageIndex];
+    vkCmdPipelineBarrier(
+        command_buffer, 
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
+        0, 
+        0, 
+        nullptr, 
+        0, 
+        nullptr, 
+        1, 
+        &image_barrier_drawToPresent
+    );
+
+    vkres=vkEndCommandBuffer(command_buffer);
+    CHECK(vkres==VK_SUCCESS,"failed to end command buffer\n");
+
+    VkSubmitInfo submit_info={
+        .sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext=nullptr,
+        .waitSemaphoreCount=0,
+        .pWaitSemaphores=nullptr,
+        .pWaitDstStageMask=0,
+        .commandBufferCount=1,
+        .pCommandBuffers=&command_buffer,
+        .signalSemaphoreCount=0,
+        .pSignalSemaphores=nullptr
+    };
+    vkres=vkQueueSubmit(system->queue, 1, &submit_info, VK_NULL_HANDLE);
+    CHECK(vkres==VK_SUCCESS,"failed to submit queue\n");
+
+    VkPresentInfoKHR present_info={
+        .sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext=nullptr,
+        .waitSemaphoreCount=0,
+        .pWaitSemaphores=nullptr,
+        .swapchainCount=1,
+        .pSwapchains=&system->swapchain,
+        .pImageIndices=&imageIndex,
+        &vkres
+    };
+    vkres=vkQueuePresentKHR(system->queue, &present_info);
+    CHECK(vkres==VK_SUCCESS,"failed to queue present\n");
+
+    vkDeviceWaitIdle(system->device);
+    vkFreeCommandBuffers(system->device, command_pool, 1, &command_buffer);
+}
+
 static inline float fp1616_to_float(xcb_input_fp1616_t fp1616){
     float maj=(float)(fp1616>>16);
     float min=(float)(fp1616&0xFFFF)/(float)(0xFFFF);
@@ -83,12 +637,11 @@ void System_pollEvent(struct System*system,struct Event*event){
         case XCB_KEY_PRESS:
             {
                 auto xevent=(xcb_key_press_event_t*)xcb_event;
-                printf("key press %d\n",xevent->detail);
 
                 *event=(struct Event){
                     .kind=EVENT_KIND_KEY_PRESS,
                     .key_press={
-                        
+                        .key=xcbKey_to_vormerKey(xevent->detail),
                     },
                 };
             }
@@ -96,12 +649,11 @@ void System_pollEvent(struct System*system,struct Event*event){
         case XCB_KEY_RELEASE:
             {
                 auto xevent=(xcb_key_release_event_t*)xcb_event;
-                printf("key release %d\n",xevent->detail);
 
                 *event=(struct Event){
                     .kind=EVENT_KIND_KEY_RELEASE,
                     .key_release={
-
+                        .key=xcbKey_to_vormerKey(xevent->detail),
                     },
                 };
             }
@@ -159,12 +711,12 @@ void System_pollEvent(struct System*system,struct Event*event){
 
         case XCB_ENTER_NOTIFY:
             {
-                printf("cursor entered the window\n");
+                //printf("cursor entered the window\n");
             }
             break;
         case XCB_LEAVE_NOTIFY:
             {
-                printf("cursor left the window\n");
+                //printf("cursor left the window\n");
             }
             break;
 
@@ -181,9 +733,6 @@ void System_pollEvent(struct System*system,struct Event*event){
                     .kind=EVENT_KIND_FOCUS_LOST,
                 };
             }
-            break;
-
-            printf("got known event\n");
             break;
     
         case XCB_CONFIGURE_NOTIFY:
@@ -211,7 +760,7 @@ void System_pollEvent(struct System*system,struct Event*event){
 
                 if(window->height==xevent->height && window->width==xevent->width){
                     event->kind=EVENT_KIND_IGNORED;
-                    printf("ignoring configure (2)\n");
+                    // printf("ignoring configure (2)\n");
                     break;
                 }
 
@@ -458,21 +1007,23 @@ void Window_create(
 
             // Set window type to normal application window (enables minimize/maximize)
             // Other window types:
-            // _NET_WM_WINDOW_TYPE_NORMAL         <- centered, only "close" decoration
+            // _NET_WM_WINDOW_TYPE_NORMAL         <- centered, only "close" decoration, accepts input
+
             // _NET_WM_WINDOW_TYPE_DIALOG         <- centered, only "close" decoration
             // _NET_WM_WINDOW_TYPE_UTILITY        <- doesnt work
-            // _NET_WM_WINDOW_TYPE_SPLASH         <- centered, no decoration
+            // _NET_WM_WINDOW_TYPE_SPLASH         <- centered, no decoration, no input
             // _NET_WM_WINDOW_TYPE_TOOLBAR        <- doesnt work
             // _NET_WM_WINDOW_TYPE_MENU           <- offset, only "close" decoration
             // _NET_WM_WINDOW_TYPE_DROPDOWN_MENU  <- offset, no decoration
             // _NET_WM_WINDOW_TYPE_POPUP_MENU     <- offset, no decoration
-            // _NET_WM_WINDOW_TYPE_TOOLTIP        <- offset, no decoration
+            // _NET_WM_WINDOW_TYPE_TOOLTIP        <- centered, has decoration, accepts input
             // _NET_WM_WINDOW_TYPE_NOTIFICATION
             // _NET_WM_WINDOW_TYPE_COMBO
             // _NET_WM_WINDOW_TYPE_DND
             // _NET_WM_WINDOW_TYPE_DOCK
+            const char*window_type="_NET_WM_WINDOW_TYPE_NORMAL";
             xcb_atom_t net_wm_window_type=xcb_get_atom(con,"_NET_WM_WINDOW_TYPE");
-            xcb_atom_t net_wm_window_type_normal=xcb_get_atom(con,"_NET_WM_WINDOW_TYPE_NORMAL");
+            xcb_atom_t net_wm_window_type_normal=xcb_get_atom(con,window_type);
             xcb_change_property(
                 con,
                 XCB_PROP_MODE_REPLACE,
@@ -493,7 +1044,7 @@ void Window_create(
             } mwm_hints={
                 1<<1,
                 0,
-                1,
+                info->decoration,
                 0,
                 0
             };

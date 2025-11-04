@@ -162,7 +162,15 @@ struct System{
     VkDevice device;
     VkQueue queue;
     VkSwapchainKHR swapchain;
+    VkFormat swapchain_format;
     VkImage *swapchain_images;
+
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffer;
+
+    VkSemaphore acquireToClear,clearToDraw,drawToPresent,presentToAcquire;
+
+    int image_index;
 };
 struct SystemCreateInfo{
     // enable extended input events

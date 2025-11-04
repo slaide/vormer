@@ -79,11 +79,8 @@ static inline const char*string_from_VkColorSpaceKHR(VkColorSpaceKHR colorspace)
     }
 }
 
-VkSemaphore acquireImageSemaphore=VK_NULL_HANDLE;
 VkFence acquireImageFence=VK_NULL_HANDLE;
 unsigned imageIndex;
-VkCommandPool command_pool;
-VkCommandBuffer command_buffer;
 unsigned queueFamily=-1;
 void System_create(struct SystemCreateInfo*create_info,struct System*system){
     CHECK(create_info->initial_window_info!=nullptr,"no intial window create info supplied");
@@ -301,6 +298,7 @@ void System_create(struct SystemCreateInfo*create_info,struct System*system){
     system->queue=queue;
 
     VkSwapchainKHR swapchain;
+    VkFormat format;
     VkImage *swapchain_images;
     if(1){
         VkResult vkres;
@@ -332,7 +330,7 @@ void System_create(struct SystemCreateInfo*create_info,struct System*system){
             printf("    %d %s\n",i,string_from_VkPresentModeKHR(present_modes[i]));
         }
 
-        VkFormat format=surface_formats[0].format;
+        format=surface_formats[0].format;
         VkColorSpaceKHR colorspace=surface_formats[0].colorSpace;
         VkSwapchainCreateInfoKHR create_swapchain_info={
             .sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -363,12 +361,24 @@ void System_create(struct SystemCreateInfo*create_info,struct System*system){
         vkGetSwapchainImagesKHR(device, swapchain, &num_swapchain_images, swapchain_images);
     }
     system->swapchain=swapchain;
+    system->swapchain_format=format;
     system->swapchain_images=swapchain_images;
+
+    //VkSemaphore acquireToClear,clearToDraw,drawToPresent,presentToAcquire
+    VkSemaphoreCreateInfo semaphore_create_info={
+        .sType=VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext=nullptr,
+        .flags=0
+    };
+    vkCreateSemaphore(device, &semaphore_create_info, nullptr, &system->acquireToClear);
+    vkCreateSemaphore(device, &semaphore_create_info, nullptr, &system->clearToDraw);
+    vkCreateSemaphore(device, &semaphore_create_info, nullptr, &system->drawToPresent);
+    vkCreateSemaphore(device, &semaphore_create_info, nullptr, &system->presentToAcquire);
 }
 void System_destroy(struct System*system){
     vkDestroyFence(system->device, acquireImageFence, nullptr);
 
-    vkDestroyCommandPool(system->device, command_pool, nullptr);
+    vkDestroyCommandPool(system->device, system->command_pool, nullptr);
 
     vkDestroySwapchainKHR(system->device, system->swapchain, nullptr);
 
@@ -427,16 +437,21 @@ static inline enum KEY xcbKey_to_vormerKey(int xcb_key){
         default: printf("unknown key %d\n",xcb_key);return KEY_UNKNOWN;
     }
 }
-
+// contents of image on acquisiton are ignored
 static const int acquiredImage_accessMask=VK_ACCESS_NONE;
 static const int acquiredImage_layout=VK_IMAGE_LAYOUT_UNDEFINED;
+// prepare to cleear
 static const int clearImage_accessMask=VK_ACCESS_MEMORY_WRITE_BIT;
 static const int clearImage_layout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+// transition to be drawn on
 static const int drawImage_accessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 static const int drawImage_layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+// transition to presentation
 static const int presentImage_accessMask=VK_ACCESS_MEMORY_READ_BIT;
 static const int presentImage_layout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+// this is used so often..
 static const VkImageSubresourceRange color_subresource_range={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+// set these up here since they dont change and depend on each other
 static VkImageMemoryBarrier
     image_barrier_acquireToClear={
         .sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -445,8 +460,8 @@ static VkImageMemoryBarrier
         .oldLayout=acquiredImage_layout,
         .dstAccessMask=clearImage_accessMask,
         .newLayout=clearImage_layout,
-        .srcQueueFamilyIndex=0,
-        .dstQueueFamilyIndex=0,
+        .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
         .image=VK_NULL_HANDLE,// filled in dynamically
         .subresourceRange=color_subresource_range
     },
@@ -457,8 +472,8 @@ static VkImageMemoryBarrier
         .dstAccessMask=drawImage_accessMask,
         .oldLayout=clearImage_layout,
         .newLayout=drawImage_layout,
-        .srcQueueFamilyIndex=0,
-        .dstQueueFamilyIndex=0,
+        .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
         .image=VK_NULL_HANDLE,
         .subresourceRange=color_subresource_range
     },
@@ -469,8 +484,8 @@ static VkImageMemoryBarrier
         .dstAccessMask=presentImage_accessMask,
         .oldLayout=drawImage_layout,
         .newLayout=presentImage_layout,
-        .srcQueueFamilyIndex=0,
-        .dstQueueFamilyIndex=0,
+        .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
         .image=VK_NULL_HANDLE,
         .subresourceRange=color_subresource_range
     };
@@ -484,34 +499,36 @@ void System_beginFrame(struct System*system){
         };
         vkCreateFence(system->device, &fence_create_info, nullptr, &acquireImageFence);
     }
-    if(command_pool==VK_NULL_HANDLE){
+    if(system->command_pool==VK_NULL_HANDLE){
         VkCommandPoolCreateInfo command_pool_create_info={
             .sType=VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .pNext=nullptr,
             .flags=0,
             .queueFamilyIndex=queueFamily
         };
-        vkCreateCommandPool(system->device, &command_pool_create_info, nullptr, &command_pool);
+        vkCreateCommandPool(system->device, &command_pool_create_info, nullptr, &system->command_pool);
     }
 
     VkCommandBufferAllocateInfo command_buffer_allocate_info={
         .sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .pNext=nullptr,
-        .commandPool=command_pool,
+        .commandPool=system->command_pool,
         .level=VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount=1
     };
-    vkAllocateCommandBuffers(system->device, &command_buffer_allocate_info, &command_buffer);
+    vkAllocateCommandBuffers(system->device, &command_buffer_allocate_info, &system->command_buffer);
 
     vkAcquireNextImageKHR(
         system->device, 
         system->swapchain, 
         UINT64_MAX, 
-        acquireImageSemaphore, 
+        0,//system->acquireToClear, 
         acquireImageFence, 
         &imageIndex
     );
     printf("acquired image %d\n",imageIndex);
+
+    system->image_index=imageIndex;
 
     vkWaitForFences(system->device, 1, &acquireImageFence, VK_TRUE, UINT64_MAX);
     vkResetFences(system->device, 1, &acquireImageFence);
@@ -522,11 +539,11 @@ void System_beginFrame(struct System*system){
         .flags=0,
         .pInheritanceInfo=nullptr
     };
-    vkBeginCommandBuffer(command_buffer, &command_buffer_begin_info);
+    vkBeginCommandBuffer(system->command_buffer, &command_buffer_begin_info);
 
     image_barrier_acquireToClear.image=system->swapchain_images[imageIndex];
     vkCmdPipelineBarrier(
-        command_buffer, 
+        system->command_buffer, 
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 
         0, 
@@ -542,7 +559,7 @@ void System_beginFrame(struct System*system){
         .float32={1,0.3,0,1}
     };
     vkCmdClearColorImage(
-        command_buffer, 
+        system->command_buffer, 
         system->swapchain_images[imageIndex], 
         image_barrier_acquireToClear.newLayout, 
         &clear_color, 
@@ -552,7 +569,7 @@ void System_beginFrame(struct System*system){
 
     image_barrier_clearToDraw.image=system->swapchain_images[imageIndex];
     vkCmdPipelineBarrier(
-        command_buffer, 
+        system->command_buffer, 
         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 
         0, 
@@ -569,7 +586,7 @@ void System_endFrame(struct System*system){
 
     image_barrier_drawToPresent.image=system->swapchain_images[imageIndex];
     vkCmdPipelineBarrier(
-        command_buffer, 
+        system->command_buffer, 
         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 
         0, 
@@ -581,7 +598,7 @@ void System_endFrame(struct System*system){
         &image_barrier_drawToPresent
     );
 
-    vkres=vkEndCommandBuffer(command_buffer);
+    vkres=vkEndCommandBuffer(system->command_buffer);
     CHECK(vkres==VK_SUCCESS,"failed to end command buffer\n");
 
     VkSubmitInfo submit_info={
@@ -591,7 +608,7 @@ void System_endFrame(struct System*system){
         .pWaitSemaphores=nullptr,
         .pWaitDstStageMask=0,
         .commandBufferCount=1,
-        .pCommandBuffers=&command_buffer,
+        .pCommandBuffers=&system->command_buffer,
         .signalSemaphoreCount=0,
         .pSignalSemaphores=nullptr
     };
@@ -612,7 +629,7 @@ void System_endFrame(struct System*system){
     CHECK(vkres==VK_SUCCESS,"failed to queue present\n");
 
     vkDeviceWaitIdle(system->device);
-    vkFreeCommandBuffers(system->device, command_pool, 1, &command_buffer);
+    vkFreeCommandBuffers(system->device, system->command_pool, 1, &system->command_buffer);
 }
 
 static inline float fp1616_to_float(xcb_input_fp1616_t fp1616){

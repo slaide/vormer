@@ -1,5 +1,5 @@
-*.o
+**.o
 build/
-resources/vormer
 .cache
 main
+**.spv

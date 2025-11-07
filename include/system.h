@@ -161,9 +161,19 @@ struct System{
     VkSurfaceKHR surface;
     VkDevice device;
     VkQueue queue;
+
     VkSwapchainKHR swapchain;
     VkFormat swapchain_format;
+    int swapchain_num_images;
     VkImage *swapchain_images;
+    VkImageView *swapchain_image_views;
+
+    VkRenderPass render_pass;
+    VkFramebuffer framebuffer[4];
+
+    VkShaderModule vertex_shader,fragment_shader;
+    VkPipelineLayout pipeline_layout;
+    VkPipeline pipeline;
 
     VkCommandPool command_pool;
     VkCommandBuffer command_buffer;
@@ -171,6 +181,8 @@ struct System{
     VkSemaphore acquireToClear,clearToDraw,drawToPresent,presentToAcquire;
 
     int image_index;
+
+    struct Scene*scene;
 };
 struct SystemCreateInfo{
     // enable extended input events
@@ -181,5 +193,6 @@ struct SystemCreateInfo{
 void System_create(struct SystemCreateInfo*create_info,struct System*system);
 void System_destroy(struct System*system);
 void System_pollEvent(struct System*system,struct Event*event);
-void System_beginFrame(struct System*system);
-void System_endFrame(struct System*system);
+void System_stepFrame(struct System*system);
+
+void System_setScene(struct System*system,struct Scene*scene);

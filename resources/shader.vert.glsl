@@ -1,10 +1,9 @@
 #version 450
 
-// Hardcoded triangle vertices (in normalized device coordinates)
 vec2 positions[3] = vec2[](
-    vec2(0.0, -0.5),   // bottom center
-    vec2(0.5, 0.5),    // top right
-    vec2(-0.5, 0.5)    // top left
+    vec2(0.0, -0.5),
+    vec2(0.5, 0.5),
+    vec2(-0.5, 0.5)
 );
 
 void main() {

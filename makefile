@@ -1,24 +1,30 @@
 CC ?= gcc
 CFLAGS = -std=gnu23 -Wall -Werror -Wpedantic -Wextra -Iinclude -g
-LFLAGS = -lxcb -lxcb-xinput -lvulkan
+LFLAGS = -lm -lxcb -lxcb-xinput -lvulkan
 
-OBJECTS = main.o system.o
+OBJECTS = main.o system.o scene.o
+SHADERS = resources/shader.vert.spv resources/shader.frag.spv
 
-all: main resources/shader.vert.spv resources/shader.frag.spv
+all: main $(OBJECTS) $(SHADERS)
 
-resources/shader.vert.spv: resources/shader.vert.glsl
-	glslc -fshader-stage=vert resources/shader.vert.glsl -o resources/shader.vert.spv
+# help:
+# $^ <- all inputs
+# $@ <- output file
+# $< <- first (leftmost) input
+# % wildcard
 
-resources/shader.frag.spv: resources/shader.frag.glsl
-	glslc -fshader-stage=frag resources/shader.frag.glsl -o resources/shader.frag.spv
+# vertex shaders
+%.vert.spv: %.vert.glsl
+	glslc -fshader-stage=vert $< -o $@
+# fragment shaders
+%.frag.spv: %.frag.glsl
+	glslc -fshader-stage=frag $< -o $@
 
-main.o: src/main.c
-	$(CC) $(CFLAGS) src/main.c -c -o main.o
-system.o: src/system.c
-	$(CC) $(CFLAGS) src/system.c -c -o system.o
+%.o: src/%.c
+	$(CC) $(CFLAGS) -c -o $@ $^
 
 main: $(OBJECTS)
-	$(CC) $(CFLAGS) $(LFLAGS) $(OBJECTS) -o main
+	$(CC) $(CFLAGS) $(LFLAGS) $^ -o main
 
 clean:
-	rm -rf $(OBJECTS)
+	rm -rf main $(OBJECTS) $(SHADERS)

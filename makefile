@@ -5,7 +5,9 @@ LFLAGS = -lm -lxcb -lxcb-xinput -lvulkan
 OBJECTS = main.o system.o scene.o
 SHADERS = resources/shader.vert.spv resources/shader.frag.spv
 
-all: main $(OBJECTS) $(SHADERS)
+APPNAME = main
+
+all: $(APPNAME) $(OBJECTS) $(SHADERS)
 
 # help:
 # $^ <- all inputs
@@ -23,8 +25,8 @@ all: main $(OBJECTS) $(SHADERS)
 %.o: src/%.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
-main: $(OBJECTS)
-	$(CC) $(CFLAGS) $(LFLAGS) $^ -o main
+$(APPNAME): $(OBJECTS)
+	$(CC) $(CFLAGS) $(LFLAGS) $^ -o $@
 
 clean:
-	rm -rf main $(OBJECTS) $(SHADERS)
+	$(RM) $(APPNAME) $(OBJECTS) $(SHADERS)
